@@ -26,7 +26,7 @@ DallasTemperature sensors(&oneWire);
 
 // Timekeeping
 unsigned long sendData = 0;         // next time we'll send data
-unsigned long SEND_WAIT = 5;     // how long to wait between submissions -- 1800 = 30 min
+unsigned long SEND_WAIT = 1800;     // how long to wait between submissions -- 1800 = 30 min
 unsigned long LOOP_WAIT_MS = 5000;  // how long to wait between loops -- 2000 ms = 2 sec
 unsigned long lastLoopMillis = 0; // time of last loop execution
 
@@ -119,15 +119,22 @@ void sendDataNow()
       LoRa.print(sendString.c_str());
       LoRa.endPacket();
 
-      Serial.println("Sent, waiting for reply...");
+      Serial.print("Sent, waiting for reply...");
 
       Watchdog.reset();
 
-      delay(250);
-      
       // try to parse response packet
+      Watchdog.reset();
       readBuffer = "";
       int packetSize = LoRa.parsePacket();
+      unsigned long loopEnd = millis() + 2000;
+      while(!packetSize && loopEnd > millis())
+      {
+        Serial.print(".");
+        packetSize = LoRa.parsePacket();
+        delay(50);
+      }
+      Serial.print(" - done\n");
       Watchdog.reset();
       if (packetSize) {
         // received a packet
@@ -161,6 +168,7 @@ void sendDataNow()
         Serial.println("Could not receive response!");
       }
       Serial.println("Waiting until " + formatDateTime(sendData) + " to send data again");
+      LoRa.idle();
   }
 }
 
