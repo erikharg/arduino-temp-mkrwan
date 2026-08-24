@@ -12,6 +12,7 @@
 #include <LoRa.h>
 #include <Adafruit_SleepyDog.h>
 #include <CRC32.h>
+#include <pins_arduino.h>
 #include "TimeLib.h"
 
 // Initialize Dallas Temperature sensors
@@ -26,11 +27,15 @@ DallasTemperature sensors(&oneWire);
 
 // Timekeeping
 unsigned long sendData = 0;         // next time we'll send data
-unsigned long SEND_WAIT = 1800;     // how long to wait between submissions -- 1800 = 30 min
+unsigned long RETRY_WAIT = 300;     // wait if no ACK -- 300 = 5 min
+const int MAX_RETRIES = 3;
+unsigned long SEND_WAIT = 3600;     // how long to wait between submissions -- 3600 = 60 min
 unsigned long LOOP_WAIT_MS = 5000;  // how long to wait between loops -- 2000 ms = 2 sec
 unsigned long lastLoopMillis = 0; // time of last loop execution
+const String DEVICE_ID = "MH1";
 
 // Storage between loops
+int retryCount = 0;
 int counter = 0;
 String readBuffer = "";
 
@@ -59,6 +64,7 @@ void setup() {
   Watchdog.reset();
   
   LoRa.enableCrc();
+  LoRa.setSyncWord(0x34);
   Serial.println("LoRa started - starting service...");
   
   sensors.begin();
@@ -103,12 +109,13 @@ void sendDataNow()
       tempString = tempAsString(tempVal);
       Watchdog.reset();
 
-      int sensorValue = analogRead(ADC_BATTERY);
+      // disable voltage for MKRWAN1310
+      int sensorValue = 0; //analogRead(ADC_BATTERY);
       // Convert the analog reading (which goes from 0 - 1023) to a voltage (0 - 4.3V):
       float voltage = sensorValue * (4.3 / 1023.0);
       voltageString = formatVoltageAsString(voltage);
       Serial.print("Sending temperature data:");
-      String sendString = tempString + ";" + voltageString;
+      String sendString = DEVICE_ID + ";" + tempString + ";" + voltageString;
 
       unsigned int checksum = computeCRC(sendString);
       Watchdog.reset();
@@ -123,6 +130,7 @@ void sendDataNow()
       LoRa.endPacket();
 
       Serial.print("Sent, waiting for reply...");
+      bool gotAck = false;
 
       Watchdog.reset();
 
@@ -153,13 +161,17 @@ void sendDataNow()
     
         // print RSSI of packet
         Serial.print("' with RSSI ");
-        Serial.println(LoRa.packetRssi());
+        Serial.print(LoRa.packetRssi());
+        Serial.print(" and SNR ");
+        Serial.println(LoRa.packetSnr());
 
-        if (readBuffer.startsWith("ACK"))
-        {
+        if (readBuffer.startsWith("ACK;" + DEVICE_ID))
+        {          
             Serial.println("Got response message:");  
             Serial.println(readBuffer);
             Serial.println("End of message");
+            gotAck = true;
+            retryCount = 0;
             sendData = now() + SEND_WAIT; // wait this long until we send data again
         } else {
             Serial.println("Got unsupported message:");
@@ -169,6 +181,15 @@ void sendDataNow()
         Watchdog.reset();
       } else {
         Serial.println("Could not receive response!");
+      }
+      if (!gotAck) {
+        retryCount++;
+        if (retryCount <= MAX_RETRIES) {
+          sendData = now() + RETRY_WAIT;
+        } else {
+          retryCount = 0;
+          sendData = now() + SEND_WAIT;
+        }
       }
       Serial.println("Waiting until " + formatDateTime(sendData) + " to send data again");
       LoRa.idle();
